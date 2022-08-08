@@ -1,0 +1,500 @@
+---
+title: "Week 7 Work"
+author: "Arin Vansomphone"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# Working with the data
+```{r message=FALSE, warning=FALSE}
+# loading the packages
+library(tidyverse)
+library(readxl)
+```
+
+```{r message=TRUE, warning=FALSE}
+# loading the data
+bloodpressure <- read_csv("bloodpressure.csv")
+hba1c <- read_csv("hba1c.csv")
+AG <- read_xlsx("UCLA Samples-2022-07-19 Summary.xlsx", sheet = "Summary",
+                skip = 7) %>%
+  rename(BSI_ID = `Sample ID`)
+linkfile <- read_csv("zhou_7816_linkfile.csv")
+accord_key <- read_csv("accord_key.csv")
+microvascularoutcomes <- read_csv("microvascularoutcomes.csv")
+cvdoutcomes <- read_csv("cvdoutcomes.csv")
+f07_baseline <- read_csv("f07_baselinehistoryphysicalexam.csv")
+otherlabs <- read_csv("otherlabs.csv")
+AG
+```
+
+```{r}
+# tidying the data
+AG <- AG %>% #linking MASKID to Batch ID
+  full_join(linkfile, by = "BSI_ID") %>% 
+  filter(!is.na(MASKID) ) %>% 
+  rename(MaskID = MASKID,
+         Box = `R2020 000036`)
+AG
+```
+```{r}
+# creating a BatchID column
+BatchIDs <- c("R2020 000036", "R2020 000037", "R2020 000038", "R2020 000039", 
+             "R2020 000040", "R2020 000041", "R2020 000042", "R2020 000043")
+index = c(1, which(AG$Box %in% BatchIDs), 4001)
+BatchID_col = rep(BatchIDs, diff(index))
+AG <- AG %>% mutate(BatchID = BatchID_col) %>%
+  relocate(BatchID, .before = Box) %>%
+  relocate(MaskID, .after = BSI_ID)
+AG
+```
+```{r}
+# replacing errors in Box
+AG["Box"][AG["Box"] == "R2020 000037"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000038"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000039"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000040"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000041"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000042"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000043"] <- "Box 1"
+AG
+```
+```{r}
+# joining hba1c with the AG dataframe
+AG <- AG %>%
+  inner_join(hba1c, by = "MaskID")
+AG
+```
+```{r}
+# joining the accord key and f07 baseline dataframes
+AG <- AG %>%
+ left_join(accord_key, by= "MaskID") %>%
+ left_join(f07_baseline, by = "MaskID")
+AG
+```
+```{r}
+# creating glycemic, bp, and lipid arm variables
+AG <- AG %>%
+mutate(glycemic_arm = ifelse(arm==1|arm==2|arm==5|arm==6,0,1),
+         bp_arm = ifelse(arm==3 | arm ==1, 1, 0),
+         lipid_arm = ifelse(arm==7 | arm == 5, 1, 0))
+AG
+```
+```{r}
+# creating the kidney variable
+baseline_ualb <- otherlabs %>% 
+  filter(Visit == "BLR") %>% 
+  mutate(kidney = ifelse(gfr < 45 | ualb > 300, 1, 0)) %>% 
+  select(MaskID, -Visit, kidney)
+baseline_ualb
+```
+```{r}
+# joining the kidney variable with the main dataframe
+AG <- AG %>%
+  inner_join(baseline_ualb, by = "MaskID")
+AG
+```
+```{r}
+# selecting and filtering the data that we need
+AG <- AG %>%
+  filter(Visit.x == "F12") %>%
+  select(BatchID, Box, MaskID, Mean, hba1c,
+         baseline_age, glycemic_arm, bp_arm, lipid_arm,
+         female, raceclass, cvd_hx_baseline, yrsdiab, 
+         hartfail, eyedisea, smokelif, kidney)
+AG
+```
+### Transforming 1,5 AG
+
+### Dealing with batch effects
+To deal with the batch effects of the data, I sort my observations into an additional categorical variable, combining batches 36 and 37 and combining the rest of the batches.
+```{r}
+group1 = c("R2020 000036", "R2020 000037")
+
+# creating the new variable and assigning values
+AG$Group = "2"
+AG$Group[AG$BatchID %in% group1] = "1"
+AG
+```
+
+### Comparing baseline covariates with 1,5 AG at 12 months
+Now I plot various baseline covariates against the 1,5 AG (`Mean`) column to see if there are any correlations between the variables. I also calculated the pearson coefficient to quantify the correlations.
+
+__Glycemic Arm:__
+```{r}
+# need to convert variable to a character type first
+AG$glycemic_arm <- as.character(AG$glycemic_arm)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = glycemic_arm, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Glycemic Arm",
+       y = "1,5 AG",
+       title = "Relationship between Glycemic Arm and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(glycemic_arm) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__BP Arm:__
+```{r}
+# need to convert variabe to a character type first
+AG$bp_arm <- as.character(AG$bp_arm)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = bp_arm, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "BP Arm",
+       y = "1,5 AG",
+       title = "Relationship between BP Arm and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(bp_arm) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Lipid Arm:__
+```{r}
+# need to convert variable to a character type first
+AG$lipid_arm <- as.character(AG$lipid_arm)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = lipid_arm, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Lipid Arm",
+       y = "1,5 AG",
+       title = "Relationship between Lipid Arm and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(lipid_arm) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Gender:__
+```{r}
+# need to convert variable to a character type first
+AG$female <- as.character(AG$female)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = female, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Gender",
+       y = "1,5 AG",
+       title = "Relationship between Gender and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(female) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Ethnicity:__
+```{r}
+# need to convert variable to a character type first
+AG$raceclass <- as.character(AG$raceclass)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = raceclass, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Ethnicity",
+       y = "1,5 AG",
+       title = "Relationship between Ethnicity and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(raceclass) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__CVD HX Baseline:__
+```{r}
+# need to convert variable to a character type first
+AG$cvd_hx_baseline <- as.character(AG$cvd_hx_baseline)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = cvd_hx_baseline, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "CVD HX Baseline",
+       y = "1,5 AG",
+       title = "Relationship between CVD HX Baseline and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(cvd_hx_baseline) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Eyedisea:__
+```{r}
+# need to convert variable to a character type first
+AG$eyedisea <- as.character(AG$eyedisea)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = eyedisea, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Eyedisea",
+       y = "1,5 AG",
+       title = "Relationship between Eyedisea and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(eyedisea) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Smokelif:__
+```{r}
+# need to convert variable to a character type first
+AG$smokelif <- as.character(AG$smokelif)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = smokelif, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Smokelif",
+       y = "1,5 AG",
+       title = "Relationship between Smokelif and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(eyedisea) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Kidney:__
+```{r}
+# need to convert variable to a character type first
+AG$kidney <- as.character(AG$kidney)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = kidney, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Kidney",
+       y = "1,5 AG",
+       title = "Relationship between Kidney and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(kidney) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Heart Failure:__
+```{r}
+# need to convert variable to a character type first
+AG$hartfail <- as.character(AG$hartfail)
+
+# plotting variable against 1,5 AG
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = hartfail, y = Mean)) +
+  geom_boxplot() +
+  labs(x = "Heart failure",
+       y = "1,5 AG",
+       title = "Relationship between Heart Failure and 1,5 AG")
+```
+```{r}
+AG %>%
+  na.omit() %>%
+  group_by(hartfail) %>%
+  summarize(Mean = mean(Mean),
+            Median = median(Mean),
+            SD = sd(Mean))
+```
+
+There is no pearson correlation coefficient for this variable because it is categorical.
+
+__Yrsdiab:__
+```{r}
+AG %>%
+  na.omit() %>%
+  ggplot(aes(x = yrsdiab, y = Mean)) +
+  geom_point() +
+  geom_smooth(method = lm, se = TRUE) +
+  labs(x = "Yrsdiab",
+       y = "1,5 AG",
+       title = "Relationship between Yrsdiab and 1,5 AG")
+```
+
+```{r}
+# calculating the pearson coefficient
+library(ggpubr)
+cor.test(AG$yrsdiab, AG$Mean, method = "pearson")
+```
+The pearson coefficient between `yrsdiab` and `Mean` is -0.087.
+
+# Summary
+* Glycemic Arm
+* BP Arm
+* Lipid Arm
+* Gender has a slight effect on 1,5 AG levels. Men tend to have slightly lower 1,5 AG levels than women.
+* Blacks, Hispanics, and Whites all have similar 1,5 AG levels. However, other ethnicities have lower 1,5 AG levels than the previously mentioned groups.
+* CVD HX baseline has no observable effect on 1,5 AG levels.
+* Eye diseases have no observable effect on 1,5 AG levels. 
+* Smoke life has no observable effect on 1,5 AG levels.
+* Kidney appears to have no observable effect on 1,5 AG levels, although more data is needed to strengthen this statement.
+* Heart failure appears to have no observable effect on 1,5 AG levels, although more data is needed to strengthen this statement.
+* Years of diabetes has no observable effect on 1,5 AG levels. 
+
+# Bonus: Running a cox regression with baseline age and 1,5 AG
+To run a cox regression and create a survival curve, we are going to take the `censor_tm` and `fuyrs_tm7p` variables that are part of the cvdoutcomes dataframe as our time and status variables. I looked their definitions up using the ACCORD key dictionary. 
+```{r}
+# loading the necessary package
+library(survival)
+library(survminer)
+```
+
+```{r}
+# selecting the fuyrs variables
+survivalvariables <- cvdoutcomes %>%
+  select(MaskID, fuyrs_tm, censor_tm)
+survivalvariables
+```
+```{r}
+# renaming and manipulating 
+survivalvariables <- survivalvariables %>%
+  rename(time = fuyrs_tm) %>%
+  mutate(status = ifelse(censor_tm==1, 1, 2)) %>%
+  select(MaskID, time, status)
+survivalvariables
+```
+```{r}
+# adding the survivalvariables to the main data frame
+AG <- AG %>%
+  inner_join(survivalvariables, by = "MaskID")
+AG
+```
+
+Now we are ready to run our models.
+```{r}
+# survival curve:
+ggsurvplot(
+    fit = survfit(Surv(time, status) ~ 1, data = survivalvariables), 
+    xlab = "Years", 
+    ylab = "Overall survival probability")
+```
+```{r}
+summary(survfit(Surv(time, status) ~ 1, data = survivalvariables), times = 7)
+```
+
+According to the data, the survival probability at the end of the study was around 86 percent.
+
+```{r}
+# cox regression model
+library(gtsummary)
+coxph(Surv(time, status) ~ Mean, data = AG) %>% 
+  gtsummary::tbl_regression(exp = TRUE) 
+```
+
+Since I did not get any definite results, I decided to sort the `Mean` values into 2 groups: normal and abnormal. These groups would be determined by the normal 1,5 AG range of 10.7 to 32.0. I then ran the cox regression again.
+```{r}
+AG <- AG %>%
+  mutate(Mean_group = ifelse(10.7 <= Mean & Mean <= 32.0, 0, 1))
+AG
+```
+
+```{r}
+# cox regression model
+library(gtsummary)
+coxph(Surv(time, status) ~ Mean_group, data = AG) %>% 
+  gtsummary::tbl_regression(exp = TRUE) 
+```
+
+Unfortunately, this cox regression model gives me an untrustworthy P-value, so I cannot extract anything meaningful from it. I have to resort to using the first models to create my conclusion, which is that 1,5 AG levels do not have an observable effect on mortality rates. 
+
+# Additional work for clinical trial problem
+I believe that the data can help us model the patient dropout rate by studying the censored data. Data is censored according to two reasons: a patient drops out of the trial or the studied event does not occur in the patient. Since we are only focused on the first reason of censoring, we can filter the second reason out of the data.
+```{r}
+dropoutpatients <- cvdoutcomes %>%
+  select(MaskID, fuyrs_po, censor_po)
+dropoutpatients
+```
+I decided to use the primary outcome based data as that is, as the name suggests, the central element of the clinical trial.
+
+```{r}
+dropoutpatients <- dropoutpatients %>%
+  filter(censor_po == 1) %>% # only censored patients, not dead ones
+  filter(fuyrs_po != 7) # second reason
+```
+
+Now I plot onto a density plot:
+```{r}
+# plotting onto a density plot
+dropoutpatients %>%
+  na.omit() %>%
+  ggplot(aes(x = fuyrs_po)) +
+  geom_density() +
+  labs(title = "Density of Patient Dropouts",
+       x = "Years",
+       y = "Density of dropouts")
+```
+```{r}
+dropoutpatients %>%
+  summarize(dropoutpercent = n() / 10251) #10251 is the starting number
+```
+
