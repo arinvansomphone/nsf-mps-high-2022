@@ -1,0 +1,298 @@
+---
+title: "Week 8 Work"
+author: "Arin Vansomphone"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# 1,5 AG Analysis
+Loading the packages:
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggpubr)
+```
+
+Loading the data:
+```{r}
+bloodpressure <- read_csv("bloodpressure.csv")
+hba1c <- read_csv("hba1c.csv")
+AG <- read_xlsx("UCLA Samples-2022-07-19 Summary.xlsx", sheet = "Summary",
+                skip = 7) %>%
+  rename(BSI_ID = `Sample ID`)
+linkfile <- read_csv("zhou_7816_linkfile.csv")
+accord_key <- read_csv("accord_key.csv")
+microvascularoutcomes <- read_csv("microvascularoutcomes.csv")
+cvdoutcomes <- read_csv("cvdoutcomes.csv")
+f07_baseline <- read_csv("f07_baselinehistoryphysicalexam.csv")
+otherlabs <- read_csv("otherlabs.csv")
+bloodpressure <- read_csv("bloodpressure.csv")
+lipids <- read_csv("lipids.csv")
+AG
+```
+
+Tidying the data:
+```{r}
+AG <- AG %>% #linking MASKID to Batch ID
+  full_join(linkfile, by = "BSI_ID") %>% 
+  filter(!is.na(MASKID) ) %>% 
+  rename(MaskID = MASKID,
+         Box = `R2020 000036`)
+AG
+```
+```{r}
+# creating a BatchID column
+BatchIDs <- c("R2020 000036", "R2020 000037", "R2020 000038", "R2020 000039", 
+             "R2020 000040", "R2020 000041", "R2020 000042", "R2020 000043")
+index = c(1, which(AG$Box %in% BatchIDs), 4001)
+BatchID_col = rep(BatchIDs, diff(index))
+AG <- AG %>% mutate(BatchID = BatchID_col) %>%
+  relocate(BatchID, .before = Box) %>%
+  relocate(MaskID, .after = BSI_ID)
+AG
+```
+```{r}
+# replacing errors in Box
+AG["Box"][AG["Box"] == "R2020 000037"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000038"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000039"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000040"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000041"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000042"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000043"] <- "Box 1"
+AG
+```
+```{r}
+# joining hba1c with the AG dataframe
+AG <- AG %>%
+  inner_join(hba1c, by = "MaskID")
+AG
+```
+```{r}
+# joining other dataframes
+AG <- AG %>%
+ left_join(accord_key, by= "MaskID") %>%
+ left_join(f07_baseline, by = c("MaskID", "Visit")) %>%
+ left_join(lipids, by = c("MaskID", "Visit")) %>%
+ left_join(bloodpressure, by = c("MaskID", "Visit")) %>%
+ left_join(otherlabs, by = c("MaskID", "Visit"))
+AG
+```
+```{r}
+# creating glycemic, bp, and lipid arm variables
+AG <- AG %>%
+mutate(glycemic_arm = ifelse(arm==1|arm==2|arm==5|arm==6,0,1),
+         bp_arm = ifelse(arm==3 | arm ==1, 1, 0),
+         lipid_arm = ifelse(arm==7 | arm == 5, 1, 0))
+AG
+```
+```{r}
+# creating the kidney variable
+baseline_ualb <- otherlabs %>% 
+  filter(Visit == "BLR") %>% 
+  mutate(kidney = ifelse(gfr < 45 | ualb > 300, 1, 0)) %>% 
+  select(MaskID, -Visit, kidney)
+baseline_ualb
+```
+```{r}
+# joining the kidney variable with the main dataframe
+AG <- AG %>%
+  inner_join(baseline_ualb, by = "MaskID")
+AG
+```
+```{r}
+# mutating other biomarkers
+AG <- AG %>%
+  mutate(bmi = wt_kg / ((ht_cm / 100) ^ 2),
+         )
+```
+```{r}
+# selecting and filtering the data that we need
+AG <- AG %>%
+  select(BatchID, Box, MaskID, Visit, Mean, hba1c,
+         baseline_age, glycemic_arm, bp_arm, lipid_arm,
+         female, raceclass, cvd_hx_baseline, yrsdiab, 
+         hartfail, eyedisea, smokelif, kidney,
+         fpg, gfr, bmi, uacr,
+         sbp, dbp, hdl, ldl,
+         trig, chol) %>%
+  rename(gender = female)
+AG
+```
+
+### Are there any differences between hba1c levels at 12 months across batches?
+Plotting the hba1c levels at 12 months (grouped by `BatchID`):
+```{r}
+AG %>%
+  filter(Visit == "F12") %>%
+  group_by(BatchID) %>%
+  summarize(Mean = mean(hba1c, na.rm = TRUE),
+            Median = median(hba1c, na.rm = TRUE),
+            SD = sd(hba1c, na.rm = TRUE)) %>%
+  ggplot(aes(x = BatchID, y = Mean)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  coord_fixed(ylim = c(5, 10))
+  labs(title = "Mean hba1c levels at 12 months (grouped by Batch ID)",
+       x = "Batch IDs",
+       y = "hba1c")
+```
+```{r}
+AG %>%
+  group_by(BatchID) %>%
+  summarize(Mean = mean(hba1c, na.rm = TRUE),
+            Median = median(hba1c, na.rm = TRUE),
+            SD = sd(hba1c, na.rm = TRUE))
+```
+
+According to the data, there are no differences in hba1c levels at 12 months across batches. 
+
+### What are the factors at baseline that contribute to 1,5 AG?
+__Computing the pearson correlation coefficients for continuous covariates:__
+```{r}
+library(corrplot)
+library(RColorBrewer)
+library(xtable)
+library(DT)
+```
+```{r}
+AG <- AG %>% mutate(flag6 = factor(ifelse(Mean >= 6, 1, 0), 
+                                   labels = c("1,5AG < 6", "1,5AG ≥ 6")),
+                    flag6 = relevel(flag6, ref = "1,5AG ≥ 6"))
+
+correlationvars <- AG %>%
+  rename(`1,5 AG` = Mean,
+         HbA1c = hba1c,
+         Age = baseline_age,
+         Yrsdiab = yrsdiab,
+         Glucose = fpg,
+         BMI = bmi,
+         SBP = sbp,
+         DBP = dbp,
+         HDL = hdl,
+         LDL = ldl,
+         Trig = trig,
+         Chol = chol,
+         uACR = uacr,
+         eGFR = gfr) %>%
+  select(flag6, `1,5 AG`, HbA1c, Age, Yrsdiab, Glucose, BMI, SBP, DBP, HDL, LDL, 
+         Trig, Chol, uACR, eGFR)
+correlationvars
+```
+```{r}
+corrplot(cor(correlationvars[-1], use = "complete.obs"), 
+         type = "upper", order = "original", diag = FALSE,
+         col=brewer.pal(n = 10, name = "RdYlBu"), 
+         title = "Correlation Plot Between Baseline Covariates", mar=c(0,0,1,0))
+```
+
+Creating a table for the values:
+```{r}
+corvarstable <- correlationvars %>%
+  na.omit() %>%
+  select(-flag6)
+
+mcor <- round(cor(corvarstable),2)
+
+lower<- mcor
+lower[lower.tri(mcor, diag=TRUE)]<-""
+lower <- as.data.frame(lower)
+
+DT::datatable(lower, 
+         extensions = c('FixedColumns',"FixedHeader"),
+          options = list(scrollX = TRUE, 
+                         paging=FALSE,
+                         fixedHeader=TRUE))
+```
+
+None of these factors show a particularly strong correlation to 1,5 AG.
+
+__Univariate regression for categorical variables:__
+
+Merging data:
+```{r}
+tindpt <- AG %>%
+  select(MaskID, Mean, BatchID,
+         baseline_age,
+         glycemic_arm, bp_arm, lipid_arm, gender, raceclass, cvd_hx_baseline,
+         yrsdiab, hartfail, eyedisea, smokelif, kidney) %>% 
+  mutate(glycemic_arm = factor(glycemic_arm, levels = c(1,0), labels = c("Yes", "No")),
+         bp_arm = factor(bp_arm, levels = c(1,0), labels = c("Yes", "No")),
+         lipid_arm = factor(lipid_arm, levels = c(1,0), labels = c("Yes", "No")),
+         gender = factor(gender, levels = c(1,0), labels = c("Yes", "No")),
+         raceclass = factor(raceclass, levels  = c("Black", "Hispanic", "White", "Other")),
+         cvd_hx_baseline = factor(cvd_hx_baseline, levels = c(1,0), labels = c("Yes", "No")),
+         hartfail = factor(hartfail, levels = c(1,2), labels = c("Yes", "No")),
+         eyedisea = factor(eyedisea, levels = c(1,2), labels = c("Yes", "No")),
+         smokelif = factor(smokelif, levels = c(1,2), labels = c("Yes", "No")),
+         kidney = factor(kidney, levels = c(1,0), labels = c("Yes", "No"))) %>%
+  mutate(gender = relevel(gender, ref = "No"),
+         cvd_hx_baseline = relevel(cvd_hx_baseline, ref = "No"),
+         glycemic_arm = relevel(glycemic_arm, ref = "No"),
+         bp_arm = relevel(bp_arm, ref = "No"),
+         lipid_arm = relevel(lipid_arm, ref = "No"),
+         eyedisea = relevel(eyedisea, ref = "No"),
+         kidney = relevel(kidney, ref="No"),
+         hartfail = relevel(hartfail, ref = "No"),
+         smokelif = relevel(smokelif, ref = "No"))
+```
+
+Fitting a linear regression:
+```{r}
+fit <- lm(log(Mean) ~ . - MaskID, tindpt)
+summary(fit)
+```
+
+### What baseline medications contribute to 1,5 AG?
+Loading the data:
+```{r}
+concomitantmeds <- read_csv("concomitantmeds.csv")
+```
+
+Filtering to baseline and creating the `insulin` variable:
+```{r}
+concomitantmeds_baseline <- concomitantmeds %>% 
+  filter(Visit == "BLR") %>%
+  mutate(insulin = ifelse(nphl_insulin==1|reg_insulin==1|la_insulin==1 | 
+                         othbol_insulin==1 |premix_insulin == 1, 1, 0))
+```
+
+Selecting the desired variables:
+```{r}
+medications <- concomitantmeds_baseline %>%
+  inner_join(AG, by = c("MaskID", "Visit")) %>% # for 1,5 AG 
+  select(MaskID, Mean, a2rb, acei, fibrate, statin, sulfonylurea, biguanide, 
+         meglitinide, tzd, insulin)
+```
+
+Merging data:
+```{r}
+tindpt2 <- medications %>%
+  mutate(a2rb = factor(a2rb, levels = c(1,0), labels = c("Yes", "No")),
+         acei = factor(acei, levels = c(1,0), labels = c("Yes", "No")),
+         fibrate = factor(fibrate, levels = c(1,0), labels = c("Yes", "No")),
+         statin = factor(statin, levels = c(1,0), labels = c("Yes", "No")),
+         sulfonylurea = factor(sulfonylurea, levels = c(1,0), labels = c("Yes", "No")),
+         biguanide = factor(biguanide, levels = c(1,0), labels = c("Yes", "No")),
+         meglitinide = factor(meglitinide, levels = c(1,0), labels = c("Yes", "No")),
+         tzd = factor(tzd, levels = c(1,0), labels = c("Yes", "No")),
+         insulin = factor(insulin, levels = c(1,0), labels = c("Yes", "No"))) %>%
+  mutate(a2rb = relevel(a2rb, ref = "No"),
+         acei = relevel(acei, ref = "No"),
+         fibrate = relevel(fibrate, ref = "No"),
+         statin = relevel(statin, ref = "No"),
+         sulfonylurea = relevel(sulfonylurea, ref = "No"),
+         biguanide = relevel(biguanide, ref = "No"),
+         meglitinide = relevel(meglitinide, ref="No"),
+         tzd = relevel(tzd, ref = "No"),
+         insulin = relevel(insulin, ref = "No"))
+```
+
+Fitting a linear regression:
+```{r}
+fit2 <- lm(log(Mean) ~ . - MaskID, tindpt2)
+summary(fit2)
+```
