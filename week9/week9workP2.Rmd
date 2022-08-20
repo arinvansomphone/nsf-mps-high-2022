@@ -1,0 +1,395 @@
+---
+title: "Tidymodel Applications in 1,5 AG Analysis"
+author: "Arin Vansomphone"
+date: "`r Sys.Date()`"
+output: html_document
+---
+I attempt to fit the best model that can predict whether a person has abnormal 1,5 AG levels. 
+
+Loading the packages:
+```{r message=FALSE, warning=TRUE}
+library(tidyverse)
+library(readxl)
+library(tidymodels)
+library(readr)
+library(vip)
+```
+
+Loading the data:
+```{r}
+bloodpressure <- read_csv("bloodpressure.csv")
+hba1c <- read_csv("hba1c.csv")
+AG <- read_xlsx("UCLA Samples-2022-07-19 Summary.xlsx", sheet = "Summary",
+                skip = 7) %>%
+  rename(BSI_ID = `Sample ID`)
+linkfile <- read_csv("zhou_7816_linkfile.csv")
+accord_key <- read_csv("accord_key.csv")
+microvascularoutcomes <- read_csv("microvascularoutcomes.csv")
+cvdoutcomes <- read_csv("cvdoutcomes.csv")
+f07_baseline <- read_csv("f07_baselinehistoryphysicalexam.csv")
+otherlabs <- read_csv("otherlabs.csv")
+bloodpressure <- read_csv("bloodpressure.csv")
+lipids <- read_csv("lipids.csv")
+concomitantmeds <- read_csv("concomitantmeds.csv")
+AG
+```
+
+Tidying the data and creating other variables:
+```{r}
+AG <- AG %>% #linking MASKID to Batch ID
+  full_join(linkfile, by = "BSI_ID") %>% 
+  filter(!is.na(MASKID) ) %>% 
+  rename(MaskID = MASKID,
+         Box = `R2020 000036`)
+AG
+```
+```{r}
+# creating a BatchID column
+BatchIDs <- c("R2020 000036", "R2020 000037", "R2020 000038", "R2020 000039", 
+             "R2020 000040", "R2020 000041", "R2020 000042", "R2020 000043")
+index = c(1, which(AG$Box %in% BatchIDs), 4001)
+BatchID_col = rep(BatchIDs, diff(index))
+AG <- AG %>% mutate(BatchID = BatchID_col) %>%
+  relocate(BatchID, .before = Box) %>%
+  relocate(MaskID, .after = BSI_ID)
+AG
+```
+```{r}
+# replacing errors in Box
+AG["Box"][AG["Box"] == "R2020 000037"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000038"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000039"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000040"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000041"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000042"] <- "Box 1"
+AG["Box"][AG["Box"] == "R2020 000043"] <- "Box 1"
+AG
+```
+```{r}
+# joining hba1c with the AG dataframe
+AG <- AG %>%
+  inner_join(hba1c, by = "MaskID")
+AG
+```
+```{r}
+# joining other dataframes
+AG <- AG %>%
+ left_join(accord_key, by= "MaskID") %>%
+ left_join(f07_baseline, by = c("MaskID", "Visit")) %>%
+ left_join(lipids, by = c("MaskID", "Visit")) %>%
+ left_join(bloodpressure, by = c("MaskID", "Visit")) %>%
+ left_join(otherlabs, by = c("MaskID", "Visit")) %>%
+ left_join(concomitantmeds, by = c("MaskID", "Visit"))
+AG
+```
+```{r}
+# creating glycemic, bp, and lipid arm variables
+AG <- AG %>%
+mutate(glycemic_arm = ifelse(arm==1|arm==2|arm==5|arm==6,0,1),
+         bp_arm = ifelse(arm==3 | arm ==1, 1, 0),
+         lipid_arm = ifelse(arm==7 | arm == 5, 1, 0))
+AG
+```
+```{r}
+# creating the kidney variable
+baseline_ualb <- otherlabs %>% 
+  filter(Visit == "BLR") %>% 
+  mutate(kidney = ifelse(gfr < 45 | ualb > 300, 1, 0)) %>% 
+  select(MaskID, -Visit, kidney)
+baseline_ualb
+```
+```{r}
+# joining the kidney variable with the main dataframe
+AG <- AG %>%
+  inner_join(baseline_ualb, by = "MaskID")
+AG
+```
+```{r}
+# mutating other biomarkers
+AG <- AG %>%
+  mutate(bmi = wt_kg / ((ht_cm / 100) ^ 2)) %>%
+  mutate(insulin = ifelse(nphl_insulin==1|reg_insulin==1|la_insulin==1 | 
+                         othbol_insulin==1 |premix_insulin == 1, 1, 0))
+AG
+```
+
+According to this [paper](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4411548/#:~:text=The%20normal%20ranges%20are%2010.7,%25%20to%206.0%25%20for%20HbA1c.), normal 1,5 AG levels range from 10.7 to 32.0. 
+```{r}
+AG <- AG %>%
+  mutate(Mean_group = ifelse(10.7 <= Mean & Mean <= 32.0, 
+                             "Normal", "Abnormal"))
+AG
+```
+
+Now I select the top ten largest factors that contribute to 1,5 AG. These factors were taken from Tomoki's univariate regression results (see his Week 8 solutions). The factors are:
+* Glycemic Arm
+* Lipid Arm
+* BP Arm
+* Ethnicity
+* Gender
+* hba1c
+* Insulin
+* Kidney
+* a2rb
+* Biguanide
+
+I also filter the database so that only baseline measurements are taken.
+```{r}
+AG <- AG %>%
+  filter(Visit == "BLR") %>%
+  select(Mean_group, glycemic_arm, lipid_arm, bp_arm, raceclass, female,
+         hba1c, insulin, kidney, a2rb, biguanide) %>%
+  na.omit()
+AG
+```
+
+Changing all of the categorical variables to factors:
+```{r}
+AG$glycemic_arm <- as.character(AG$glycemic_arm)
+AG$glycemic_arm <- as.factor(AG$glycemic_arm)
+AG$lipid_arm <- as.character(AG$lipid_arm)
+AG$lipid_arm <- as.factor(AG$lipid_arm)
+AG$bp_arm <- as.character(AG$bp_arm)
+AG$bp_arm <- as.factor(AG$bp_arm)
+AG$raceclass <- as.factor(AG$raceclass)
+AG$female <- as.character(AG$female)
+AG$female <- as.factor(AG$female)
+AG$insulin <- as.character(AG$insulin)
+AG$insulin <- as.factor(AG$insulin)
+AG$kidney <- as.character(AG$kidney)
+AG$kidney <- as.factor(AG$kidney)
+AG$a2rb <- as.character(AG$a2rb)
+AG$a2rb <- as.factor(AG$a2rb)
+AG$biguanide <- as.character(AG$biguanide)
+AG$biguanide <- as.factor(AG$biguanide)
+AG$Mean_group <- as.factor(AG$Mean_group)
+glimpse(AG)
+```
+
+Finding out what percent of cases have abnormal 1,5 AG levels:
+```{r}
+AG %>%
+  group_by(Mean_group) %>%
+  summarize(Number = n(),
+            Percent = Number / 3923)
+```
+
+Data splitting:
+```{r}
+set.seed(123)
+splits <- initial_split(AG, strata = Mean_group)
+
+AG_other <- training(splits)
+AG_test <- testing(splits)
+
+AG_other %>%
+  count(Mean_group) %>%
+  mutate(prop = n/sum(n))
+```
+
+Creating a validation set:
+```{r}
+set.seed(234)
+val_set <- validation_split(AG_other, strata = Mean_group, prop = 0.80)
+val_set
+```
+
+Now we are ready to start modeling!
+
+### Penalized Logistic Regression Model
+Building the model:
+```{r}
+lr_mod <-
+  logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+```
+
+Creating the recipe:
+```{r}
+lr_recipe <-
+  recipe(Mean_group ~ ., data = AG_other) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors())
+```
+
+Creating the workflow:
+```{r}
+lr_workflow <-
+  workflow() %>%
+  add_model(lr_mod) %>%
+  add_recipe(lr_recipe)
+```
+
+Creating the grid for tuning:
+```{r}
+lr_reg_grid <- tibble(penalty = 10^seq(-4, -1, length.out = 30))
+```
+
+Training the model:
+```{r}
+lr_res <- lr_workflow %>%
+  tune_grid(val_set, grid = lr_reg_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+```
+
+Plotting the area under ROC curve for penalty values:
+```{r}
+lr_res %>%
+  collect_metrics() %>%
+  ggplot(aes(x = penalty, y = mean)) +
+  geom_point() +
+  geom_line() +
+  ylab("Area under the ROC curve") +
+  scale_x_log10(labels = scales::label_number())
+```
+
+```{r}
+lr_res %>%
+  show_best("roc_auc", n = 15) %>%
+  arrange(penalty)
+```
+
+It appears that our model works better with a larger penalty, which means less variables. This is quite interesting, as it means that there is one variable that dominates the 1,5 AG levels.
+
+Selecting the best penalty value:
+```{r}
+lr_best <- 
+  lr_res %>%
+  collect_metrics() %>%
+  arrange(penalty) %>%
+  slice(25)
+lr_best
+```
+
+```{r}
+lr_res %>%
+  collect_predictions()
+```
+
+```{r}
+lr_auc <- lr_res %>%
+  collect_predictions(parameters = lr_best) %>%
+  roc_curve(Mean_group, .pred_Abnormal) %>% # predicts if they have abnormal levels
+  mutate(model = "Logistic Regression")
+
+autoplot(lr_auc)
+```
+
+The penalized logistic regression model has around a 68.5% accuracy.
+
+### Tree-Based Ensemble Model
+Finding the number of cores available:
+```{r}
+cores <- parallel::detectCores()
+cores
+```
+
+Building the model:
+```{r}
+rf_mod <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>%
+  set_engine("ranger", num.threads = cores) %>%
+  set_mode("classification")
+```
+
+Creating the recipe:
+```{r}
+rf_recipe <-
+  recipe(Mean_group ~ ., data = AG_other)
+```
+
+Creating the workflow:
+```{r}
+rf_workflow <- workflow() %>%
+  add_model(rf_mod) %>%
+  add_recipe(rf_recipe)
+```
+
+Hyperparameters:
+```{r}
+rf_mod
+```
+```{r}
+extract_parameter_set_dials(rf_mod)
+```
+
+Generating grid of candidate models:
+```{r}
+set.seed(345)
+rf_res <- rf_workflow %>%
+  tune_grid(val_set, grid = 25, control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+```
+
+Showing the top 5 random forest models:
+```{r}
+rf_res %>%
+  show_best(metric = "roc_auc")
+```
+
+Plotting the models:
+```{r}
+autoplot(rf_res)
+```
+Selecting the best model according to ROC AUC:
+```{r}
+rf_best <- rf_res %>%
+  select_best(metric = "roc_auc")
+rf_best
+```
+
+Calculating the data needed to plot the ROC curve:
+```{r}
+rf_auc <- rf_res %>%
+  collect_predictions(parameters = rf_best) %>%
+  roc_curve(Mean_group, .pred_Abnormal) %>%
+  mutate(model = "Random Forest")
+```
+
+Plotting and comparing the RF and PLR model:
+```{r}
+bind_rows(rf_auc, lr_auc) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) +
+  geom_path(lwd = 1.5, alpha = 0.8) +
+  geom_abline(lty = 3) +
+  coord_equal() +
+  scale_color_viridis_d(option = "plasma", end = .6)
+```
+
+Both models have around a 68% accuracy, but the PLR model appears to have a slightly higher accuracy of 68.5%, compared to 68.2% with the RF model. Therefore, I am going to use the PLR model as my last fit.
+```{r}
+last_lr_mod <-
+  logistic_reg(penalty = 0.03039195, mixture = 1) %>%
+  set_engine("glmnet", importance = "impurity")
+
+last_lr_workflow <- lr_workflow %>%
+  update_model(last_lr_mod)
+
+last_lr_fit <- last_lr_workflow %>%
+  last_fit(splits)
+
+last_lr_fit %>%
+  collect_metrics()
+```
+
+The accuracy comes in at 69.1%, and the ROC AUC comes in at 73.6%. Not bad!
+
+Visualizing the variable importance scores:
+```{r}
+last_lr_fit %>%
+extract_fit_parsnip() %>%
+  vip(num_features = 10)
+```
+
+The most important predictor in the model was the lipid arm treatment, followed closely by the glycemic arm treatment, and then hba1c.
+
+Plotting the last ROC curve:
+```{r}
+last_lr_fit %>%
+  collect_predictions() %>%
+  roc_curve(Mean_group, .pred_Abnormal) %>%
+  autoplot()
+```
+
