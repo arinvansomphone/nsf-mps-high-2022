@@ -5,4 +5,4 @@
 Working with UCLA professors Dr. Hua Zhou and Dr. Jin Zhou, as well as Tomoki Okuno, this project features all of my progress in learning to code with R and applying it 
 to biostatistical applications.
 
-The data we worked with is from the ACCORD study dataset (unfortunately not publicly available), which contains variables such as hba1c, 1,5 AG, blood pressure, and other cardiovascular measurements. We summarized and plotted the central variables of the study and used correlation methods to find predictors to abnormal hba1c and 1,5 AG levels. The latter weeks of the internship detail our findings and conclusions. 
+The data we worked with is from the ACCORD study dataset (not publicly available), which contains cardiovascular biomarkers such as hba1c, 1,5 AG, and blood pressure. We summarized and plotted the central variables of the study and used correlation methods to find predictors to abnormal hba1c and 1,5 AG levels. The latter weeks of the internship detail our findings and conclusions. 
